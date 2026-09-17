@@ -1,0 +1,43 @@
+{
+  "name": "jev-mcp",
+  "version": "0.1.0",
+  "description": "Connect JEV to MCP clients and compare its judgments against general-purpose LLMs using shared datasets and measurable accuracy.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "bin": {
+    "jev-mcp": "./src/cli.js",
+    "jev-eval": "./bin/eval.js"
+  },
+  "main": "./src/server.js",
+  "files": [
+    "src",
+    "eval",
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node src/cli.js serve",
+    "test": "node --test test/*.test.js",
+    "eval": "node bin/eval.js"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "typesafe",
+    "jev",
+    "llm",
+    "evaluation",
+    "benchmark",
+    "calibration",
+    "classification"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.21.0",
+    "commander": "^14.0.2",
+    "zod": "^3.25.76"
+  }
+}
