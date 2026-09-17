@@ -10,6 +10,7 @@ export function createJevAdapter({ model = DEFAULT_MODEL, criteria, env = proces
 
   return {
     name: `jev:${model}`,
+    method: "native",
     describe: () => `TypeSafe ${model} via /v1/systemone, noul question`,
     fingerprint: { system: "jev", model, criteria },
 

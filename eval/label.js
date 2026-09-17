@@ -3,7 +3,13 @@
  *
  * The labeller never sees any system's prediction — ground truth collected
  * after seeing a model's answer is not ground truth. Progress is written
- * after every keystroke, so quitting half way loses nothing.
+ * after every decision, so quitting half way loses nothing.
+ *
+ * The prompt is injected rather than hard-wired to readline, so the decision
+ * loop can be driven by a test. An earlier version guarded the loop with
+ * `"ynsubq".includes(answer)` seeded from an empty string; because
+ * `String.includes("")` is always true, the loop never ran and every item was
+ * silently filed as unlabelled. Nothing in the suite exercised this path.
  */
 
 import { createInterface } from "node:readline/promises";
@@ -12,11 +18,29 @@ import { stdin, stdout } from "node:process";
 import { appendJsonl, loadLabels, loadItems, paths } from "./dataset.js";
 import { rng } from "./stats.js";
 
+/** Accepted keystrokes. Membership is tested against this, never a substring. */
+export const ANSWERS = Object.freeze({
+  y: { label: 1, describe: "yes" },
+  n: { label: 0, describe: "no" },
+  s: { label: null, describe: "skip" },
+  u: { label: null, describe: "unsure" },
+  b: { label: undefined, describe: "show again" },
+  q: { label: undefined, describe: "quit" },
+});
+
 const KEYS = `
   y  yes, the condition holds        n  no, it does not
   s  skip this item                  u  unsure — records no label
   b  show the item again             q  save and quit
 `;
+
+/** Default prompt: one line on the terminal. */
+function terminalPrompt(rl) {
+  return async (text) => {
+    const raw = await rl.question(text);
+    return raw === undefined || raw === null ? null : raw;
+  };
+}
 
 /**
  * @param {string} root Dataset directory.
@@ -26,9 +50,15 @@ const KEYS = `
  * @param {number} [options.limit] Stop after this many new labels.
  * @param {boolean} [options.shuffle] Randomise order to blunt ordering effects.
  * @param {number} [options.seed]
+ * @param {(text: string) => Promise<string|null>} [options.prompt] Injected for tests.
+ *   Returning null means the input stream ended — treated as quit.
+ * @param {(line: string) => void} [options.write] Injected for tests.
  */
-export async function label(root, { rater, question, limit = Infinity, shuffle = false, seed = 42 }) {
+export async function label(root, {
+  rater, question, limit = Infinity, shuffle = false, seed = 42, prompt, write = console.log,
+}) {
   if (!rater) throw new Error("a rater name is required: labels are filed per person so agreement can be measured");
+  if (!question?.trim()) throw new Error("a question is required");
 
   const items = await loadItems(root);
   const done = await loadLabels(root, rater);
@@ -43,49 +73,64 @@ export async function label(root, { rater, question, limit = Infinity, shuffle =
   }
 
   if (!queue.length) {
-    console.log(`Nothing left to label — ${rater} has covered all ${items.length} items.`);
-    return { labelled: 0, remaining: 0 };
+    write(`Nothing left to label — ${rater} has covered all ${items.length} items.`);
+    return { labelled: 0, skipped: 0, remaining: 0, quit: false };
   }
 
-  console.log(`\n${question}\n`);
-  console.log(`${queue.length} unlabelled of ${items.length}. Keys:${KEYS}`);
+  const rl = prompt ? null : createInterface({ input: stdin, output: stdout });
+  const ask = prompt ?? terminalPrompt(rl);
 
-  const rl = createInterface({ input: stdin, output: stdout });
-  const pending = [];
+  write(`\n${question}\n`);
+  write(`${queue.length} unlabelled of ${items.length}. Keys:${KEYS}`);
+
+  const target = Math.min(limit, queue.length);
   let labelled = 0;
+  let skipped = 0;
+  let quit = false;
 
   try {
     for (const item of queue) {
       if (labelled >= limit) break;
 
-      let answer = "";
-      while (!"ynsubq".includes(answer)) {
-        console.log(`\n${"─".repeat(72)}`);
-        console.log(render(item.state));
-        console.log(`${"─".repeat(72)}`);
-        answer = (await rl.question(`[${labelled + 1}/${Math.min(limit, queue.length)}] ${item.id} — y/n/s/u/b/q: `))
-          .trim()
-          .toLowerCase()
-          .charAt(0);
-        if (answer === "b") answer = "";
+      const choice = await askUntilValid(ask, write, item, labelled, target);
+      if (choice === "q") {
+        quit = true;
+        break;
       }
 
-      if (answer === "q") break;
-      const value = answer === "y" ? 1 : answer === "n" ? 0 : null;
-      pending.push({ id: item.id, label: value, at: new Date().toISOString() });
-      if (value !== null) labelled++;
+      const { label: value } = ANSWERS[choice];
+      if (value === null) skipped++;
+      else labelled++;
 
-      // Flush often; a crash should never cost more than one decision.
-      await appendJsonl(paths.labels(root, rater), pending.splice(0));
+      // Flushed per decision: a crash costs at most the item in hand.
+      await appendJsonl(paths.labels(root, rater), [
+        { id: item.id, label: value, rater, at: new Date().toISOString() },
+      ]);
     }
   } finally {
-    rl.close();
-    if (pending.length) await appendJsonl(paths.labels(root, rater), pending);
+    rl?.close();
   }
 
-  const remaining = queue.length - labelled;
-  console.log(`\nSaved ${labelled} label(s) for ${rater}. ${remaining} item(s) still unlabelled.`);
-  return { labelled, remaining };
+  const remaining = queue.length - labelled - skipped;
+  write(`\nSaved ${labelled} label(s)${skipped ? ` and ${skipped} skip(s)` : ""} for ${rater}. ${remaining} item(s) still unlabelled.`);
+  return { labelled, skipped, remaining, quit };
+}
+
+/** Shows the item and reprompts until a recognised key arrives. */
+async function askUntilValid(ask, write, item, labelled, target) {
+  for (;;) {
+    write(`\n${"─".repeat(72)}`);
+    write(render(item.state));
+    write("─".repeat(72));
+
+    const raw = await ask(`[${labelled + 1}/${target}] ${item.id} — y/n/s/u/b/q: `);
+    // A closed stream (Ctrl-D, piped input exhausted) means stop, not loop.
+    if (raw === null || raw === undefined) return "q";
+
+    const key = String(raw).trim().toLowerCase().charAt(0);
+    if (key && key !== "b" && Object.hasOwn(ANSWERS, key)) return key;
+    if (key !== "b") write(`  "${String(raw).trim()}" is not one of y/n/s/u/b/q.`);
+  }
 }
 
 /** Renders an item's state readably whether it is prose or structured. */

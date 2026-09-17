@@ -11,7 +11,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Command } from "commander";
 
-import { align, listRaters, listRuns, loadConsensus, loadItems, loadLabels, loadPredictions, paths, writeJsonl } from "../eval/dataset.js";
+import { align, listRaters, listRuns, loadConsensus, loadItems, loadLabels, loadPredictions, paths, readRunMeta, writeJsonl } from "../eval/dataset.js";
 import { cohensKappa, compare, evaluate } from "../eval/metrics.js";
 import { pairedSampleSize } from "../eval/stats.js";
 import { renderComparison, renderPower, renderScore } from "../eval/report.js";
@@ -121,15 +121,23 @@ program
     if (!labels.size) throw new Error("no labels yet — run `eval label` first");
 
     const predictions = await loadPredictions(root, options.run);
+    const meta = await readRunMeta(root, options.run);
     const aligned = align(items, labels, [predictions]);
     if (!aligned.ids.length) throw new Error("no items have both a label and a prediction");
 
     const result = evaluate(aligned.predictions[0], aligned.labels);
-    const body = renderScore(options.run, result);
+    const body = renderScore(options.run, result, {
+      method: meta?.method,
+      coverage: {
+        scored: aligned.ids.length,
+        total: items.length,
+        unlabelled: items.length - labels.size - disputed.length,
+        disputed: disputed.length,
+        failed: meta?.failed ?? 0,
+      },
+    });
     console.log(`\n${body}`);
-    console.log(
-      `Labels from ${raters.join(", ") || "none"}${disputed.length ? `; ${disputed.length} disputed item(s) excluded` : ""}.`,
-    );
+    console.log(`Labels from ${raters.join(", ") || "none"}.`);
     console.log(`Report: ${await saveReport(root, `score-${options.run}.md`, body)}`);
   });
 
@@ -138,11 +146,32 @@ program
   .description("compare two runs on the items both covered")
   .requiredOption("-a, --a <run>", "first run")
   .requiredOption("-b, --b <run>", "second run")
+  .option("--allow-mismatch", "compare even if the two runs used different questions or datasets")
   .action(async (root, options) => {
     const items = await loadItems(root);
     const config = await readConfig(root);
     const { labels, disputed } = await loadConsensus(root);
     if (!labels.size) throw new Error("no labels yet — run `eval label` first");
+
+    const metaA = await readRunMeta(root, options.a);
+    const metaB = await readRunMeta(root, options.b);
+
+    // A head-to-head is only meaningful if both systems were asked the same
+    // thing about the same items. Refuse rather than quietly compare apples.
+    const mismatches = [];
+    if (metaA && metaB) {
+      if (metaA.question !== metaB.question) {
+        mismatches.push(`different questions:\n    ${options.a}: ${JSON.stringify(metaA.question)}\n    ${options.b}: ${JSON.stringify(metaB.question)}`);
+      }
+      if (metaA.datasetFingerprint !== metaB.datasetFingerprint) {
+        mismatches.push(`the dataset changed between runs (${options.a}: ${metaA.datasetFingerprint}, ${options.b}: ${metaB.datasetFingerprint}) — re-run both`);
+      }
+    } else {
+      mismatches.push(`no run metadata for ${!metaA ? options.a : options.b}; re-run it so the question and dataset can be checked`);
+    }
+    if (mismatches.length && !options.allowMismatch) {
+      throw new Error(`refusing to compare —\n  ${mismatches.join("\n  ")}\n  (override with --allow-mismatch)`);
+    }
 
     const aligned = align(items, labels, [
       await loadPredictions(root, options.a),
@@ -154,19 +183,26 @@ program
       threshold: config.threshold ?? 0.5,
     });
 
-    const scoreA = evaluate(aligned.predictions[0], aligned.labels);
-    const scoreB = evaluate(aligned.predictions[1], aligned.labels);
+    const coverage = {
+      scored: aligned.ids.length,
+      total: items.length,
+      unlabelled: items.length - labels.size - disputed.length,
+      disputed: disputed.length,
+      failed: (metaA?.failed ?? 0) + (metaB?.failed ?? 0),
+    };
+    const methods = { [options.a]: metaA?.method, [options.b]: metaB?.method };
+
     const body = [
-      renderComparison(options.a, options.b, result),
-      renderScore(options.a, scoreA),
-      renderScore(options.b, scoreB),
+      renderComparison(options.a, options.b, result, { methods, coverage }),
+      renderScore(options.a, evaluate(aligned.predictions[0], aligned.labels), { method: metaA?.method }),
+      renderScore(options.b, evaluate(aligned.predictions[1], aligned.labels), { method: metaB?.method }),
     ].join("\n");
 
     console.log(`\n${body}`);
-    if (disputed.length) console.log(`${disputed.length} disputed item(s) excluded.`);
+    if (mismatches.length) console.log(`⚠ compared despite: ${mismatches.join("; ")}`);
     console.log(`Report: ${await saveReport(root, `compare-${options.a}-vs-${options.b}.md`, body)}`);
 
-    if (!result.conclusive) {
+    if (!result.conclusive && !result.underpowered) {
       const observed = Math.abs(result.accuracyDelta.point) || 0.02;
       const discordance = Math.max(result.mcnemar.discordant / result.n, observed + 0.05);
       const need = pairedSampleSize({ from: 0.85, to: 0.85 + observed, discordance });

@@ -7,7 +7,7 @@
  * anything. Accuracy is still reported, because it is what people ask for.
  */
 
-import { bootstrapCI, mcnemar, mean } from "./stats.js";
+import { bootstrapCI, mcnemar, mean, rng as rngFor } from "./stats.js";
 
 const EPSILON = 1e-15;
 const clamp01 = (p) => Math.min(1 - EPSILON, Math.max(EPSILON, p));
@@ -121,6 +121,45 @@ export function bestThreshold(predictions, labels, objective = "f1") {
 }
 
 /**
+ * Threshold tuned on k-1 folds and scored on the held-out fold, averaged.
+ *
+ * `bestThreshold` above picks and scores the cut on the same data, so its F1
+ * is optimistic by construction. This is the number to quote.
+ */
+export function heldOutThreshold(predictions, labels, { folds = 5, seed = 42, objective = "f1" } = {}) {
+  const n = predictions.length;
+  if (n < folds * 2) return { folds: 0, f1: NaN, thresholds: [], note: "too few items to cross-validate" };
+
+  const next = rngFor(seed);
+  const order = Array.from({ length: n }, (_, i) => i)
+    .map((i) => ({ i, key: next() }))
+    .sort((a, b) => a.key - b.key)
+    .map(({ i }) => i);
+
+  const scores = [];
+  const thresholds = [];
+  for (let fold = 0; fold < folds; fold++) {
+    const test = order.filter((_, position) => position % folds === fold);
+    const train = order.filter((_, position) => position % folds !== fold);
+    if (!test.length || !train.length) continue;
+
+    const tuned = bestThreshold(train.map((i) => predictions[i]), train.map((i) => labels[i]), objective);
+    const held = atThreshold(test.map((i) => predictions[i]), test.map((i) => labels[i]), tuned.threshold);
+    thresholds.push(tuned.threshold);
+    scores.push(held[objective]);
+  }
+
+  return {
+    folds: scores.length,
+    f1: scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : NaN,
+    thresholds,
+  };
+}
+
+/** Sample floor below which a bootstrap interval carries no information. */
+export const MIN_ITEMS_FOR_VERDICT = 30;
+
+/**
  * Every metric for one system, each with a bootstrap interval.
  * @param {number[]} predictions Probabilities in [0,1].
  * @param {0|1[]} labels
@@ -142,7 +181,11 @@ export function evaluate(predictions, labels, { seed = 42, resamples = 2000, bin
     accuracy: ci((p, y) => atThreshold(p, y, 0.5).accuracy),
     calibration: calibration(predictions, labels, bins),
     at50: atThreshold(predictions, labels, 0.5),
-    best: bestThreshold(predictions, labels, "f1"),
+    // Tuned and scored on the same rows: optimistic, reported for reference only.
+    best: { ...bestThreshold(predictions, labels, "f1"), inSample: true },
+    heldOut: heldOutThreshold(predictions, labels, { seed }),
+    underpowered: n < MIN_ITEMS_FOR_VERDICT,
+    minItems: MIN_ITEMS_FOR_VERDICT,
   };
 }
 
@@ -154,7 +197,7 @@ export function evaluate(predictions, labels, { seed = 42, resamples = 2000, bin
  * @param {number[]} b Probabilities from the second.
  * @param {0|1[]} labels
  */
-export function compare(a, b, labels, { seed = 42, resamples = 2000, threshold = 0.5 } = {}) {
+export function compare(a, b, labels, { seed = 42, resamples = 2000, threshold = 0.5, minItems = MIN_ITEMS_FOR_VERDICT } = {}) {
   const n = labels.length;
   if (a.length !== n || b.length !== n) throw new Error("all three arrays must be the same length");
 
@@ -183,14 +226,31 @@ export function compare(a, b, labels, { seed = 42, resamples = 2000, threshold =
   }
 
   const test = mcnemar(aOnly, bOnly);
+
+  // A bootstrap over a handful of rows resamples the same values every time,
+  // so the interval collapses onto the point estimate and looks decisive.
+  // That is an artefact of the sample size, not evidence.
+  const degenerate = brierDelta.lower === brierDelta.upper;
+  const underpowered = n < minItems;
+  const excludesZero = brierDelta.lower > 0 || brierDelta.upper < 0;
+
+  const warnings = [];
+  if (underpowered) warnings.push(`only ${n} item(s) scored; ${minItems} is the floor for any verdict`);
+  if (degenerate) warnings.push("the bootstrap interval collapsed onto the point estimate — too few distinct rows");
+  if (test.discordant === 0) warnings.push("the two systems made identical decisions on every item");
+
   return {
     n,
     brierDelta,      // negative favours the first system
     accuracyDelta,   // positive favours the first system
     mcnemar: test,
-    significant: test.pValue < 0.05,
+    significant: !underpowered && !degenerate && test.pValue < 0.05,
     // An interval straddling zero is the result, not a failed run.
-    conclusive: brierDelta.lower > 0 || brierDelta.upper < 0,
+    conclusive: excludesZero && !underpowered && !degenerate,
+    underpowered,
+    degenerate,
+    minItems,
+    warnings,
   };
 }
 

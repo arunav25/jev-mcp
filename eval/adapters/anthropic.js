@@ -19,6 +19,7 @@ export function createAnthropicAdapter({
 
   return {
     name: `anthropic:${model}:verbalized`,
+    method: "verbalized",
     describe: () => `${model} via the Messages API (verbalized probability)`,
     fingerprint: { system: "anthropic", model },
 

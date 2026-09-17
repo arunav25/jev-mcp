@@ -170,11 +170,17 @@ test("adapter specs parse into options", () => {
   assert.throws(() => createAdapter("telepathy"), /unknown system/);
 });
 
-test("verbalized replies parse, including percentages", () => {
+test("verbalized replies parse strictly", () => {
   assert.equal(parseProbability("0.85"), 0.85);
   assert.equal(parseProbability("  0.9  "), 0.9);
+  assert.equal(parseProbability("0"), 0);
+  assert.equal(parseProbability("1"), 1);
   assert.equal(parseProbability("85%"), 0.85);
-  assert.equal(parseProbability("Probability: 0.42"), 0.42);
-  assert.throws(() => parseProbability("maybe?"), /no number/);
+  assert.equal(parseProbability("100%"), 1);
+  assert.equal(parseProbability("0.42."), 0.42, "a trailing full stop is tolerated");
+
+  // Anything ambiguous is rejected rather than coerced — see regression tests.
+  assert.throws(() => parseProbability("maybe?"), /expected a bare probability/);
   assert.throws(() => parseProbability("140%"), /out of range/);
+  assert.throws(() => parseProbability("Probability: 0.42"), /expected a bare probability/);
 });

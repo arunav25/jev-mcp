@@ -31,6 +31,7 @@ export function createOpenAIAdapter({
 
   return {
     name: `openai:${model}:${mode}`,
+    method: mode,
     describe: () => `${model} via ${baseUrl} (${mode})`,
     fingerprint: { system: "openai", model, mode, temperature },
 
@@ -89,12 +90,34 @@ export function createOpenAIAdapter({
   };
 }
 
+/**
+ * Parses a verbalized probability, strictly.
+ *
+ * Leniency here corrupts results silently, which is worse than failing: an
+ * earlier version matched the first digits anywhere in the string, so "-0.8"
+ * became 0.8, "1%" became 1, and "1.5" was rescaled to 0.015. A reply that
+ * does not parse is recorded as a failed prediction and shows up in the
+ * report's coverage line, where it can be seen.
+ */
 export function parseProbability(text) {
-  const match = String(text ?? "").match(/\d*\.?\d+/);
-  if (!match) throw new Error(`no number in the reply: ${JSON.stringify(text)?.slice(0, 200)}`);
-  let value = Number(match[0]);
-  if (value > 1 && value <= 100) value /= 100; // it answered in percent
-  if (!(value >= 0 && value <= 1)) throw new Error(`probability out of range: ${value}`);
+  const raw = String(text ?? "").trim();
+  const match = raw.match(/^([0-9]*\.?[0-9]+)\s*(%?)\.?$/);
+  if (!match) {
+    throw new Error(`expected a bare probability, got ${JSON.stringify(raw.slice(0, 80))}`);
+  }
+
+  const value = Number(match[1]);
+  if (!Number.isFinite(value)) throw new Error(`not a finite number: ${JSON.stringify(raw)}`);
+
+  if (match[2] === "%") {
+    if (value > 100) throw new Error(`percentage out of range: ${value}%`);
+    return value / 100;
+  }
+  if (value > 1) {
+    // Never guess that "1.5" or "85" meant a percentage; the caller should fix
+    // the prompt rather than have the harness invent a scale.
+    throw new Error(`expected a value in [0,1] or an explicit percentage, got ${value}`);
+  }
   return value;
 }
 

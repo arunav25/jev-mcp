@@ -21,7 +21,23 @@ export const paths = {
   predictions: (root, run) => join(root, "predictions", `${run}.jsonl`),
   predictionDir: (root) => join(root, "predictions"),
   reports: (root) => join(root, "reports"),
+  runMeta: (root, run) => join(root, "predictions", `${run}.meta.json`),
 };
+
+/** Provenance for a prediction set, so a comparison can refuse mismatched runs. */
+export async function writeRunMeta(root, run, meta) {
+  await mkdir(dirname(paths.runMeta(root, run)), { recursive: true });
+  await writeFile(paths.runMeta(root, run), JSON.stringify(meta, null, 2) + "\n", "utf8");
+}
+
+export async function readRunMeta(root, run) {
+  try {
+    return JSON.parse(await readFile(paths.runMeta(root, run), "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
 
 export async function readJsonl(path) {
   let text;

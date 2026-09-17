@@ -27,9 +27,21 @@ tells you whether it is actually beating whatever you were using before.
 
 ## Install
 
+Not published to npm yet, so install from the repository:
+
 ```sh
-npm install -g jev-mcp
+npm install -g github:arunav25/jev-mcp
 ```
+
+Or clone it, which is what you want if you plan to run the evaluation harness:
+
+```sh
+git clone https://github.com/arunav25/jev-mcp.git
+cd jev-mcp && npm install && npm link
+```
+
+> The bare name `jev-mcp` on npm belongs to an unrelated project. This package publishes as
+> `@arunav25/jev-mcp`; until it is published, use one of the commands above.
 
 Then point your agents at it. The key has to be in your environment *before* you run this, because
 agents launch the server without your shell, so its value is written into each client's config:
@@ -57,7 +69,7 @@ Any MCP client that speaks stdio will do. Run `jev-mcp doctor` to get the exact 
   "mcpServers": {
     "jev": {
       "command": "/usr/local/bin/node",
-      "args": ["/usr/local/lib/node_modules/jev-mcp/src/cli.js", "serve"],
+      "args": ["/usr/local/lib/node_modules/@arunav25/jev-mcp/src/cli.js", "serve"],
       "env": { "TYPESAFE_API_KEY": "sk-..." }
     }
   }
@@ -163,8 +175,8 @@ jev-eval init datasets/urgency --question "Does this message need a response tod
 # put your real items in datasets/urgency/items.jsonl, one JSON object per line:
 #   {"id": "t-001", "state": {"subject": "...", "body": "..."}}
 
-jev-eval label datasets/urgency --rater rater-1     # never shows you a model's answer
-jev-eval label datasets/urgency --rater rater-2     # a second rater bounds what's resolvable
+jev-eval label datasets/urgency --rater arunav      # never shows you a model's answer
+jev-eval label datasets/urgency --rater mohib       # a second rater bounds what's resolvable
 jev-eval agreement datasets/urgency                 # Cohen's kappa between the two
 
 jev-eval run datasets/urgency --system jev --run jev
@@ -175,6 +187,10 @@ jev-eval compare datasets/urgency -a jev -b llm
 
 Both systems are asked the identical question — it lives in the dataset's `config.json`, not in the
 command — and `compare` scores them only on items both covered, so the per-item difficulty cancels.
+
+The harness scores **noul (binary) questions only**. `choice` and `score` questions work through the
+MCP server but have no scoring path here yet — comparing them needs different metrics (macro-F1 and
+a confusion matrix; MAE and rank correlation respectively).
 
 ### What it reports
 
