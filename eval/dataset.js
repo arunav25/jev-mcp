@@ -142,6 +142,11 @@ export async function loadPredictions(root, run) {
   return byId;
 }
 
+/** Full prediction rows, including timing and token counts. */
+export async function loadPredictionRows(root, run) {
+  return readJsonl(paths.predictions(root, run));
+}
+
 /** Runs present for a dataset. */
 export async function listRuns(root) {
   try {

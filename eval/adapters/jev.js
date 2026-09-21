@@ -2,6 +2,7 @@
 
 import { TypeSafeClient } from "../../src/client.js";
 import { baseUrl, requireApiKey, DEFAULT_MODEL } from "../../src/config.js";
+import { normalizeUsage } from "../performance.js";
 
 const QUESTION_ID = "target";
 
@@ -28,7 +29,7 @@ export function createJevAdapter({ model = DEFAULT_MODEL, criteria, env = proces
       if (typeof answer?.noul !== "number") {
         throw new Error(`no noul value in response: ${JSON.stringify(response).slice(0, 300)}`);
       }
-      return { probability: answer.noul, raw: answer };
+      return { probability: answer.noul, raw: answer, usage: normalizeUsage(response?.usage) };
     },
   };
 }

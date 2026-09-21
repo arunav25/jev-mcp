@@ -182,8 +182,8 @@ jev-eval init datasets/urgency --question "Does this message need a response tod
 # put your real items in datasets/urgency/items.jsonl, one JSON object per line:
 #   {"id": "t-001", "state": {"subject": "...", "body": "..."}}
 
-jev-eval label datasets/urgency --rater arunav      # never shows you a model's answer
-jev-eval label datasets/urgency --rater mohib       # a second rater bounds what's resolvable
+jev-eval label datasets/urgency --rater rater-1     # never shows you a model's answer
+jev-eval label datasets/urgency --rater rater-2     # a second rater bounds what's resolvable
 jev-eval agreement datasets/urgency                 # Cohen's kappa between the two
 
 jev-eval run datasets/urgency --system jev --run jev
@@ -198,6 +198,38 @@ command — and `compare` scores them only on items both covered, so the per-ite
 The harness scores **noul (binary) questions only**. `choice` and `score` questions work through the
 MCP server but have no scoring path here yet — comparing them needs different metrics (macro-F1 and
 a confusion matrix; MAE and rank correlation respectively).
+
+### Latency, tokens and cost — the part that needs no labels
+
+```sh
+jev-eval run datasets/urgency --system jev --run jev
+jev-eval run datasets/urgency --system openai:model=gpt-4o-mini,mode=logprobs --run llm
+jev-eval perf datasets/urgency -a jev -b llm     # no labels involved
+```
+
+Every call is timed and its token counts recorded, so `perf` reports p50/p90/p95/p99 latency, tokens
+per call, and a paired median latency difference with a confidence interval — paired because a long
+ticket is a long prompt for both systems, and median because one retry in the tail would otherwise
+decide it.
+
+This matters more than it first looks. An accuracy gap of a point or two needs thousands of labelled
+items to establish; a system that is twice as slow or five times dearer is unmistakable across fifty
+**unlabelled** ones. So the operational comparison is available on day one, before any labelling
+starts, and it is often what the decision actually turns on.
+
+Cost is reported only from rates you supply, because they change and are per-account. Add them to the
+dataset's `config.json`, keyed by run name:
+
+```json
+{
+  "pricing": {
+    "jev": { "inputPer1M": 0.00, "outputPer1M": 0.00, "currency": "USD" },
+    "llm": { "inputPer1M": 0.00, "outputPer1M": 0.00, "currency": "USD" }
+  }
+}
+```
+
+Without them the latency and token numbers still appear; the cost line says what is missing.
 
 ### What it reports
 
@@ -239,6 +271,7 @@ can resolve is how consistently humans can answer it. Fix the question, then col
 | `jev-mcp serve` | Run the MCP server over stdio. This is what agents invoke. |
 | `jev-mcp install` | Register with Claude Code, Claude Desktop and Codex. `--name` avoids a name collision. |
 | `jev-mcp doctor` | Show the resolved key status, endpoint, launch command and config path. |
+| `jev-eval perf` | Latency, tokens and cost for one or two runs. Needs no labels. |
 | `jev-eval …` | Evaluation harness — see above. `jev-eval --help` lists its subcommands. |
 
 ## Environment

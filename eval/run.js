@@ -11,6 +11,7 @@
  */
 
 import { fingerprint, loadItems, paths, readJsonl, writeJsonl, writeRunMeta } from "./dataset.js";
+import { normalizeUsage } from "./performance.js";
 
 const FLUSH_EVERY = 10;
 
@@ -66,15 +67,35 @@ export async function run(root, adapter, { run: runName, question, concurrency =
   const queue = todo[Symbol.iterator]();
   const workers = Array.from({ length: Math.max(1, Math.min(concurrency, todo.length)) }, async () => {
     for (const { item, stamp } of queue) {
+      // Timed around the adapter call, so retries inside it count — that is
+      // what a caller actually waits for.
+      const started = performance.now();
       try {
-        const { probability, raw } = await adapter.predict(item, { question });
+        const { probability, raw, usage } = await adapter.predict(item, { question });
+        const latencyMs = performance.now() - started;
         if (typeof probability !== "number" || !(probability >= 0 && probability <= 1)) {
           throw new Error(`probability out of range: ${probability}`);
         }
-        results.set(item.id, { id: item.id, probability, raw, fingerprint: stamp });
+        // Normalised here too, so an adapter returning a raw provider shape
+        // still yields token counts instead of silent zeros.
+        const normalized = normalizeUsage(usage);
+        results.set(item.id, {
+          id: item.id,
+          probability,
+          raw,
+          ...(normalized ? { usage: normalized } : {}),
+          latencyMs: Math.round(latencyMs),
+          fingerprint: stamp,
+        });
       } catch (error) {
         errors.push({ id: item.id, error: error.message });
-        results.set(item.id, { id: item.id, probability: null, error: error.message, fingerprint: stamp });
+        results.set(item.id, {
+          id: item.id,
+          probability: null,
+          error: error.message,
+          latencyMs: Math.round(performance.now() - started),
+          fingerprint: stamp,
+        });
       }
       done++;
       if (done % FLUSH_EVERY === 0) await flush();

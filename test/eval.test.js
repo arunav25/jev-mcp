@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -36,7 +36,7 @@ test("loadItems rejects duplicates, blanks and missing ids", async () => {
 
 test("a later label for the same item supersedes the earlier one", async () => {
   const root = await scratch(sample);
-  await writeJsonl(paths.labels(root, "ar"), [
+  await writeJsonl(paths.labels(root, "rater-1"), [
     { id: "a", label: 0 },
     { id: "a", label: 1 },
   ]);
@@ -48,12 +48,12 @@ test("a later label for the same item supersedes the earlier one", async () => {
 
 test("consensus keeps agreement and excludes disputes", async () => {
   const root = await scratch(sample);
-  await writeJsonl(paths.labels(root, "ar"), [{ id: "a", label: 1 }, { id: "b", label: 0 }, { id: "c", label: 1 }]);
-  await writeJsonl(paths.labels(root, "mo"), [{ id: "a", label: 1 }, { id: "b", label: 1 }]);
+  await writeJsonl(paths.labels(root, "rater-1"), [{ id: "a", label: 1 }, { id: "b", label: 0 }, { id: "c", label: 1 }]);
+  await writeJsonl(paths.labels(root, "rater-2"), [{ id: "a", label: 1 }, { id: "b", label: 1 }]);
 
   const { labels, disputed, raters } = await loadConsensus(root);
 
-  assert.deepEqual(raters.sort(), ["ar", "mo"]);
+  assert.deepEqual(raters.sort(), ["rater-1", "rater-2"]);
   assert.equal(labels.get("a"), 1);
   assert.equal(labels.get("c"), 1, "an item only one rater saw still counts");
   assert.deepEqual(disputed, ["b"]);
@@ -62,7 +62,7 @@ test("consensus keeps agreement and excludes disputes", async () => {
 
 test("skipped labels are ignored", async () => {
   const root = await scratch(sample);
-  await writeJsonl(paths.labels(root, "ar"), [{ id: "a", label: null }, { id: "b", label: 1 }]);
+  await writeJsonl(paths.labels(root, "rater-1"), [{ id: "a", label: null }, { id: "b", label: 1 }]);
 
   const { labels } = await loadConsensus(root);
   assert.equal(labels.has("a"), false);
@@ -183,4 +183,16 @@ test("verbalized replies parse strictly", () => {
   assert.throws(() => parseProbability("maybe?"), /expected a bare probability/);
   assert.throws(() => parseProbability("140%"), /out of range/);
   assert.throws(() => parseProbability("Probability: 0.42"), /expected a bare probability/);
+});
+
+test("README example rater names are placeholders", async () => {
+  // Docs hygiene: the label flow needs two raters, and it is easy to reach for
+  // two colleagues' names when writing the example. Keep them generic.
+  const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+  const raters = [...readme.matchAll(/--rater\s+(\S+)/g)].map((match) => match[1]);
+
+  assert.ok(raters.length > 0, "the README should document --rater");
+  for (const rater of raters) {
+    assert.match(rater, /^rater-\d+$/, `"${rater}" should be a placeholder such as rater-1`);
+  }
 });
