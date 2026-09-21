@@ -11,10 +11,11 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Command } from "commander";
 
-import { align, listRaters, listRuns, loadConsensus, loadItems, loadLabels, loadPredictions, paths, readRunMeta, writeJsonl } from "../eval/dataset.js";
+import { align, listRaters, listRuns, loadConsensus, loadItems, loadLabels, loadPredictionRows, loadPredictions, paths, readRunMeta, writeJsonl } from "../eval/dataset.js";
 import { cohensKappa, compare, evaluate } from "../eval/metrics.js";
 import { pairedSampleSize } from "../eval/stats.js";
-import { renderComparison, renderPower, renderScore } from "../eval/report.js";
+import { compareCost, compareLatency, summarize } from "../eval/performance.js";
+import { renderComparison, renderPerformance, renderPerformanceComparison, renderPower, renderScore } from "../eval/report.js";
 import { createAdapter } from "../eval/adapters/index.js";
 import { label } from "../eval/label.js";
 import { run } from "../eval/run.js";
@@ -48,7 +49,19 @@ program
     await mkdir(root, { recursive: true });
     await writeFile(
       configPath(root),
-      JSON.stringify({ question: options.question, criteria: null, threshold: 0.5 }, null, 2) + "\n",
+      JSON.stringify(
+        {
+          question: options.question,
+          criteria: null,
+          threshold: 0.5,
+          // Per-million-token rates, keyed by run name. Left empty on purpose:
+          // rates change and are per-account, so cost is reported only from
+          // figures you supply.
+          pricing: {},
+        },
+        null,
+        2,
+      ) + "\n",
     );
     await writeJsonl(paths.items(root), [
       { id: "example-001", state: { subject: "Payouts failing", body: "Help! My payouts have been failing for 3 days." } },
@@ -192,11 +205,25 @@ program
     };
     const methods = { [options.a]: metaA?.method, [options.b]: metaB?.method };
 
+    const rates = config.pricing ?? {};
+    const rowsA = await loadPredictionRows(root, options.a);
+    const rowsB = await loadPredictionRows(root, options.b);
+    const perfA = summarize(rowsA, { rate: rates[options.a] });
+    const perfB = summarize(rowsB, { rate: rates[options.b] });
+
     const body = [
       renderComparison(options.a, options.b, result, { methods, coverage }),
       renderScore(options.a, evaluate(aligned.predictions[0], aligned.labels), { method: metaA?.method }),
       renderScore(options.b, evaluate(aligned.predictions[1], aligned.labels), { method: metaB?.method }),
-    ].join("\n");
+      perfA.latency || perfB.latency
+        ? renderPerformanceComparison(options.a, options.b, {
+            a: perfA,
+            b: perfB,
+            latency: compareLatency(rowsA, rowsB),
+            cost: compareCost(perfA, perfB),
+          })
+        : "",
+    ].filter(Boolean).join("\n");
 
     console.log(`\n${body}`);
     if (mismatches.length) console.log(`⚠ compared despite: ${mismatches.join("; ")}`);
@@ -211,6 +238,40 @@ program
           `(you have ${result.n}).`,
       );
     }
+  });
+
+program
+  .command("perf <dataset>")
+  .description("latency, tokens and cost for one or two runs — no labels needed")
+  .requiredOption("-a, --a <run>", "first run")
+  .option("-b, --b <run>", "second run, for a head-to-head")
+  .action(async (root, options) => {
+    const config = await readConfig(root).catch(() => ({}));
+    const rates = config.pricing ?? {};
+
+    const rowsA = await loadPredictionRows(root, options.a);
+    if (!rowsA.length) throw new Error(`no predictions found for run "${options.a}"`);
+    const summaryA = summarize(rowsA, { rate: rates[options.a] });
+
+    if (!options.b) {
+      const body = ["## " + options.a, "", renderPerformance(options.a, summaryA)].join("\n");
+      console.log(`\n${body}`);
+      console.log(`Report: ${await saveReport(root, `perf-${options.a}.md`, body)}`);
+      return;
+    }
+
+    const rowsB = await loadPredictionRows(root, options.b);
+    if (!rowsB.length) throw new Error(`no predictions found for run "${options.b}"`);
+    const summaryB = summarize(rowsB, { rate: rates[options.b] });
+
+    const body = renderPerformanceComparison(options.a, options.b, {
+      a: summaryA,
+      b: summaryB,
+      latency: compareLatency(rowsA, rowsB),
+      cost: compareCost(summaryA, summaryB),
+    });
+    console.log(`\n${body}`);
+    console.log(`Report: ${await saveReport(root, `perf-${options.a}-vs-${options.b}.md`, body)}`);
   });
 
 program
@@ -268,7 +329,9 @@ program
     for (const name of runs) {
       const predictions = await loadPredictions(root, name);
       const scorable = align(items, labels, [predictions]).ids.length;
-      console.log(`    ${name}: ${predictions.size} predictions, ${scorable} scorable`);
+      const perf = summarize(await loadPredictionRows(root, name));
+      const timing = perf.latency ? `, p50 ${Math.round(perf.latency.p50)}ms` : "";
+      console.log(`    ${name}: ${predictions.size} predictions, ${scorable} scorable${timing}`);
     }
   });
 

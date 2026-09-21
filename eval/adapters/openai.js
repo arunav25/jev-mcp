@@ -12,6 +12,7 @@
  */
 
 import { postJson } from "../http.js";
+import { normalizeUsage } from "../performance.js";
 
 const YES = /^\s*(yes|y|true|1)\b/i;
 const NO = /^\s*(no|n|false|0)\b/i;
@@ -69,7 +70,7 @@ export function createOpenAIAdapter({
         }
         if (yes + no === 0) throw new Error(`neither Yes nor No appeared in the top tokens: ${top.map((t) => JSON.stringify(t.token)).join(",")}`);
 
-        return { probability: yes / (yes + no), raw: { yesMass: yes, noMass: no } };
+        return { probability: yes / (yes + no), raw: { yesMass: yes, noMass: no }, usage: normalizeUsage(data?.usage) };
       }
 
       const data = await postJson(url, {
@@ -85,7 +86,11 @@ export function createOpenAIAdapter({
           ],
         },
       });
-      return { probability: parseProbability(data?.choices?.[0]?.message?.content), raw: data?.choices?.[0]?.message };
+      return {
+        probability: parseProbability(data?.choices?.[0]?.message?.content),
+        raw: data?.choices?.[0]?.message,
+        usage: normalizeUsage(data?.usage),
+      };
     },
   };
 }

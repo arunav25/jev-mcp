@@ -8,6 +8,7 @@
 
 import { postJson } from "../http.js";
 import { parseProbability, render } from "./openai.js";
+import { normalizeUsage } from "../performance.js";
 
 export function createAnthropicAdapter({
   model = "claude-sonnet-4-5",
@@ -36,7 +37,7 @@ export function createAnthropicAdapter({
         },
       });
       const text = data?.content?.find((block) => block.type === "text")?.text;
-      return { probability: parseProbability(text), raw: { text } };
+      return { probability: parseProbability(text), raw: { text }, usage: normalizeUsage(data?.usage) };
     },
   };
 }
