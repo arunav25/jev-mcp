@@ -117,11 +117,14 @@ export function createEvaluateHandler(client) {
     }
 
     try {
-      const result = await client.evaluate(
+      const { raw } = await client.evaluate(
         { state, questions, model: model?.trim() || DEFAULT_MODEL },
         extra?.signal,
       );
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      // Forward the API's own bytes. Re-serializing would rewrite every number
+      // through a double, so anything carrying more precision than that —
+      // an identifier past 2^53, say — would come back altered.
+      return { content: [{ type: "text", text: raw }] };
     } catch (error) {
       if (error instanceof ApiError) return toolError(explain(error));
       throw error;

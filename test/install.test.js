@@ -72,3 +72,73 @@ test("dry run reports a plan and changes nothing", async () => {
   assert.equal(failures, 0);
   assert.ok(["planned", "skipped"].includes(results[0].status));
 });
+
+// ── Not clobbering someone else's server ──────────────────────────────────
+// Setup used to delete any entry under our name before re-adding it, assuming
+// it was a previous install of ours. Nothing checked, so a user with their own
+// MCP server called "jev" lost it with no message.
+
+import { isOurs } from "../src/install.js";
+
+const ourSpec = { command: "/usr/bin/node", args: ["/opt/jev-mcp/src/cli.js", "serve"] };
+
+test("an entry launching this package is recognised as ours", () => {
+  assert.equal(isOurs({ command: "/usr/bin/node", args: ["/opt/jev-mcp/src/cli.js", "serve"] }, ourSpec), true);
+});
+
+test("a previous install of ours elsewhere is still recognised", () => {
+  const elsewhere = { command: "/opt/homebrew/bin/node", args: ["/usr/local/lib/node_modules/@arunav25/jev-mcp/src/cli.js", "serve"] };
+  assert.equal(isOurs(elsewhere, ourSpec), true);
+});
+
+test("a stranger's server under the same name is not ours", () => {
+  assert.equal(isOurs({ command: "/bin/jev", args: ["--stdio"] }, ourSpec), false);
+  assert.equal(isOurs({ command: "python", args: ["-m", "somebody.jev"] }, ourSpec), false);
+  assert.equal(isOurs({}, ourSpec), false);
+  assert.equal(isOurs(null, ourSpec), false);
+});
+
+test("a path that merely mentions the name is not treated as ours", () => {
+  assert.equal(isOurs({ command: "node", args: ["/opt/jev-mcp-fork/src/cli.js"] }, ourSpec), false);
+});
+
+test("the desktop merge refuses to overwrite a foreign entry", () => {
+  const existing = JSON.stringify({ mcpServers: { jev: { command: "/bin/someone-elses-jev" } } });
+
+  assert.throws(
+    () => mergeDesktopConfig(existing, entry, "jev", ourSpec),
+    (error) => {
+      assert.equal(error.foreign, true);
+      assert.match(error.message, /not created by this package/);
+      return true;
+    },
+  );
+});
+
+test("the desktop merge still replaces our own entry", () => {
+  const existing = JSON.stringify({
+    mcpServers: { jev: { command: "/usr/bin/node", args: ["/opt/jev-mcp/src/cli.js", "serve"] } },
+  });
+
+  const merged = JSON.parse(mergeDesktopConfig(existing, entry, "jev", ourSpec));
+  assert.deepEqual(merged.mcpServers.jev, entry);
+});
+
+test("a custom name sidesteps the collision entirely", () => {
+  const existing = JSON.stringify({ mcpServers: { jev: { command: "/bin/someone-elses-jev" } } });
+
+  const merged = JSON.parse(mergeDesktopConfig(existing, entry, "jev-arunav", ourSpec));
+
+  assert.deepEqual(merged.mcpServers["jev-arunav"], entry);
+  assert.deepEqual(merged.mcpServers.jev, { command: "/bin/someone-elses-jev" }, "theirs is untouched");
+});
+
+test("install threads a custom name through to the plan", async () => {
+  const { results } = await install({
+    clients: ["claude-code"],
+    dryRun: true,
+    name: "jev-arunav",
+    env: { TYPESAFE_API_KEY: "k" },
+  });
+  if (results[0].status === "planned") assert.match(results[0].detail, /mcp add jev-arunav/);
+});

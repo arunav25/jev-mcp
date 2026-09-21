@@ -68,10 +68,11 @@ test("rejects an unknown question type", () => {
 
 test("handler applies the default model and returns the body as text", async () => {
   let sent;
+  const body = '{"answers":{"urgent":{"type":"noul","noul":0.8}}}';
   const handler = createEvaluateHandler({
     evaluate: async (payload) => {
       sent = payload;
-      return { answers: { urgent: { type: "noul", noul: 0.8 } } };
+      return { raw: body, json: JSON.parse(body) };
     },
   });
 
@@ -79,19 +80,19 @@ test("handler applies the default model and returns the body as text", async () 
 
   assert.equal(sent.model, "jev-latest");
   assert.ok(!result.isError);
-  assert.match(result.content[0].text, /"noul": 0.8/);
+  assert.equal(result.content[0].text, body, "the API response is forwarded byte for byte");
 });
 
 test("handler honours an explicit model", async () => {
   let sent;
-  const handler = createEvaluateHandler({ evaluate: async (p) => ((sent = p), {}) });
+  const handler = createEvaluateHandler({ evaluate: async (p) => ((sent = p), { raw: "{}", json: {} }) });
   await handler({ state: "s", questions: { a: {} }, model: "  jev-2  " });
   assert.equal(sent.model, "jev-2");
 });
 
 test("handler reports missing state and empty questions without calling the API", async () => {
   let called = false;
-  const handler = createEvaluateHandler({ evaluate: async () => ((called = true), {}) });
+  const handler = createEvaluateHandler({ evaluate: async () => ((called = true), { raw: "{}", json: {} }) });
 
   assert.match((await handler({ questions: { a: {} } })).content[0].text, /state is required/);
   assert.match((await handler({ state: "s", questions: {} })).content[0].text, /at least one question/);

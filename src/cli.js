@@ -10,7 +10,7 @@
 import { Command } from "commander";
 
 import { CLIENTS, desktopConfigPath, install, launchSpec } from "./install.js";
-import { API_KEY_VAR, CONSOLE_URL, baseUrl } from "./config.js";
+import { API_KEY_VAR, CONSOLE_URL, SERVER_NAME, baseUrl } from "./config.js";
 import { version } from "./version.js";
 
 const program = new Command();
@@ -39,10 +39,15 @@ program
     [],
   )
   .option("-n, --dry-run", "print what would be changed, change nothing")
+  .option(
+    "--name <server-name>",
+    "register under this MCP server name (use this if the default collides with a server you already have)",
+  )
   .action(async (options) => {
-    const { results, failures } = await install({
+    const { results, failures, conflicts } = await install({
       clients: options.client.length ? options.client : CLIENTS,
       dryRun: Boolean(options.dryRun),
+      ...(options.name ? { name: options.name } : {}),
     });
 
     for (const result of results) {
@@ -52,6 +57,14 @@ program
 
     if (failures) {
       console.error(`\n${failures} client(s) failed. Nothing else was changed.`);
+      process.exitCode = 1;
+      return;
+    }
+    if (conflicts) {
+      console.error(
+        `\n${conflicts} client(s) already had a server under that name that this package did not create. ` +
+          `They were left alone — nothing of yours was overwritten.`,
+      );
       process.exitCode = 1;
       return;
     }
@@ -67,6 +80,7 @@ program
 
     console.log(`${symbolFor(hasKey ? "installed" : "failed")} ${API_KEY_VAR} ${hasKey ? "is set" : `is missing — get one at ${CONSOLE_URL}`}`);
     console.log(`  endpoint       ${baseUrl()}`);
+    console.log(`  server name    ${SERVER_NAME} (override with \`install --name\`)`);
     console.log(`  launch command ${[command, ...args].join(" ")}`);
     console.log(`  desktop config ${desktopConfigPath()}`);
     console.log(`  node           ${process.version}`);
@@ -74,7 +88,7 @@ program
   });
 
 function symbolFor(status) {
-  return { installed: "✓", planned: "·", skipped: "–", failed: "✗" }[status] ?? "·";
+  return { installed: "✓", planned: "·", skipped: "–", failed: "✗", conflict: "!" }[status] ?? "·";
 }
 
 try {

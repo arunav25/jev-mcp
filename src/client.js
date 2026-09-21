@@ -14,6 +14,26 @@ const TRANSIENT = new Set([429, 502, 503, 504, 529]);
 /** Ceiling on a response body, so a runaway reply cannot exhaust memory. */
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
+/**
+ * A body that overran the cap.
+ *
+ * Kept separate from ApiError because it must never be retried: the reply was
+ * not readable in full, so it is not something to make a decision from, and
+ * asking again will produce the same oversized reply. Treating it as a
+ * transport blip meant one overlong response cost four round trips.
+ */
+export class ResponseTooLargeError extends Error {
+  constructor(bytes) {
+    super(`TypeSafe response exceeds the ${MAX_RESPONSE_BYTES} byte limit (read ${bytes}+ bytes)`);
+    this.name = "ResponseTooLargeError";
+    this.bytes = bytes;
+  }
+
+  get retryable() {
+    return false;
+  }
+}
+
 export class ApiError extends Error {
   /**
    * @param {number} status HTTP status, or 0 when the request never landed.
@@ -63,9 +83,12 @@ export class TypeSafeClient {
   }
 
   /**
-   * Posts an evaluation request and returns the parsed response.
+   * Posts an evaluation request.
    * @param {object} payload Request body, already validated by the caller.
    * @param {AbortSignal} [signal] Cancels the whole retry sequence.
+   * @returns {Promise<{raw: string, json: object}>} `raw` is the API's own
+   *   bytes, kept so a caller can forward exactly what the API said instead of
+   *   a re-serialization of it; `json` is the same content parsed.
    */
   async evaluate(payload, signal) {
     const url = this.baseUrl + EVALUATE_PATH;
@@ -79,6 +102,8 @@ export class TypeSafeClient {
         result = await this.#attempt(url, body, signal);
       } catch (error) {
         if (signal?.aborted) throw error;
+        // An unreadable body is a dead end, not a blip — surface it at once.
+        if (error instanceof ResponseTooLargeError) throw error;
         // A transport failure looks the same as a 5xx from here.
         result = { error: new ApiError(0, String(error?.message ?? error)) };
       }
@@ -122,7 +147,7 @@ export class TypeSafeClient {
     }
 
     try {
-      return { ok: true, value: text ? JSON.parse(text) : {} };
+      return { ok: true, value: { raw: text, json: text ? JSON.parse(text) : {} } };
     } catch {
       // A 2xx that is not JSON is a broken gateway, not a usable answer.
       return { ok: false, error: new ApiError(response.status, text) };
@@ -137,17 +162,47 @@ export class TypeSafeClient {
   }
 }
 
-/** Reads a body, stopping once it exceeds the cap. */
+/**
+ * Reads a body, refusing anything past the cap.
+ *
+ * Streams and stops at the first chunk that crosses the limit, so an oversized
+ * reply is never fully buffered. Counting is in bytes, not characters: a
+ * character count under-reports any multi-byte UTF-8 and lets the real figure
+ * drift above the cap.
+ *
+ * Reading the whole body and then checking its length would still reject, but
+ * only after holding all of it in memory — which is the thing the cap exists
+ * to prevent.
+ */
 async function readCapped(response) {
   const declared = Number(response.headers?.get?.("content-length"));
   if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
-    throw new Error(`response of ${declared} bytes exceeds the ${MAX_RESPONSE_BYTES} byte limit`);
+    throw new ResponseTooLargeError(declared);
   }
-  const text = await response.text();
-  if (text.length > MAX_RESPONSE_BYTES) {
-    throw new Error(`response exceeds the ${MAX_RESPONSE_BYTES} byte limit`);
+
+  const reader = response.body?.getReader?.();
+  if (!reader) {
+    // No stream available (some stubs, some polyfills): fall back to buffering.
+    const text = await response.text();
+    const bytes = Buffer.byteLength(text, "utf8");
+    if (bytes > MAX_RESPONSE_BYTES) throw new ResponseTooLargeError(bytes);
+    return text;
   }
-  return text;
+
+  const chunks = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_RESPONSE_BYTES) throw new ResponseTooLargeError(total);
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+  return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
 }
 
 /** Retry-After is either seconds or an HTTP date. */

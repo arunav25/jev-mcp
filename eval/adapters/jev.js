@@ -15,7 +15,7 @@ export function createJevAdapter({ model = DEFAULT_MODEL, criteria, env = proces
     fingerprint: { system: "jev", model, criteria },
 
     async predict(item, { question, signal }) {
-      const response = await client.evaluate(
+      const { json: response } = await client.evaluate(
         {
           state: item.state,
           model,

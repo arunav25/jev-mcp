@@ -132,6 +132,10 @@ Back comes the answer under the same keys you used:
 | `choice` | required map of option → description or `null` | `choice`, `probabilities`, `confidence` |
 | `score` | required ordered array of 2+ level descriptions | `score`, `legend`, `probabilities`, `confidence` |
 
+`score` answers are **0-indexed**: N levels answer between `0` and `N-1`, so `3.87` over 5 levels sits
+between the fourth and fifth level — not 3.87 out of 5. Read it through the `legend` the response
+returns, which names each index.
+
 ### Getting good answers
 
 - **`state` is the only thing a question can see.** Put every fact the decision rests on there.
@@ -141,6 +145,9 @@ Back comes the answer under the same keys you used:
 - **Questions in a call can't see each other's answers.** They run together over the same state. If
   step two depends on step one, make two calls.
 - **Give `choice` an escape hatch** when the input might match nothing.
+- **Put observations in `state`, not conclusions.** A verdict you already reached reads as evidence
+  for itself, and the probability comes back as your own conclusion with a number attached. Word
+  instructions as the condition to test, not the answer you expect.
 - **`score` levels have to describe real situations.** A bare 1–5 scale gives the model nothing to
   anchor on.
 - **0.5 on a `noul` means uncertain**, not "medium amount of the thing you asked about". And
@@ -230,7 +237,7 @@ can resolve is how consistently humans can answer it. Fix the question, then col
 | Command | What it does |
 | --- | --- |
 | `jev-mcp serve` | Run the MCP server over stdio. This is what agents invoke. |
-| `jev-mcp install` | Register with Claude Code, Claude Desktop and Codex. |
+| `jev-mcp install` | Register with Claude Code, Claude Desktop and Codex. `--name` avoids a name collision. |
 | `jev-mcp doctor` | Show the resolved key status, endpoint, launch command and config path. |
 | `jev-eval …` | Evaluation harness — see above. `jev-eval --help` lists its subcommands. |
 
@@ -250,10 +257,25 @@ Every `TYPESAFE_*` variable in your shell is carried into the client configs by 
 - `429`, `529` and transport failures are retried four times with jittered exponential backoff, and
   a `Retry-After` header is always honoured over the computed delay. `401` and `422` fail straight
   away — retrying a bad key or a bad request only wastes time.
-- Response bodies are capped at 8 MB.
-- `stdout` carries the MCP protocol and nothing else; all diagnostics go to `stderr`.
+- Responses are capped at 8 MB and **rejected** past it, not truncated. The read stops at the first
+  chunk over the line, so an oversized reply is never fully buffered, and it is not retried — a body
+  that couldn't be read whole is not one to decide from, and asking again returns the same body.
+- The API's response JSON is forwarded to the agent byte for byte rather than re-serialized, so
+  nothing in it is rewritten through a double on the way out.
+- `install` never touches an MCP server it didn't create. If something is already registered under
+  the name and its launch path isn't this package, it is left alone and reported; `--name` registers
+  under a different one. Codex is the exception — it exposes no config read path, so an existing
+  entry there is replaced.
 - The Claude Desktop config is written via a temp file and a rename, so a failed write can't truncate
   a file that also holds your own preferences. Every other key in it is preserved.
+- `stdout` carries the MCP protocol and nothing else; all diagnostics go to `stderr`.
+
+### One limit you have to work around
+
+Numbers reaching the tool have already been parsed as IEEE-754 doubles by the JSON-RPC layer, so an
+integer above `9007199254740991` arrives with its last digits gone, and two distinct ids can turn up
+identical. This is upstream of anything the server can fix. **Send long identifiers as strings** —
+the tool description tells the agent so, but it is worth knowing yourself.
 
 ## Development
 
